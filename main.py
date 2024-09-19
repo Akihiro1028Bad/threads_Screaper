@@ -13,13 +13,25 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.keys import Keys
 from datetime import datetime, timedelta
 from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.utils import get_column_letter
+from datetime import datetime
+import random
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def setup_driver():
     chrome_options = Options()
     #chrome_options.add_argument("--headless")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"
+    ]
+    
+    selected_user_agent = random.choice(user_agents)
+    chrome_options.add_argument(f"user-agent={selected_user_agent}")
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
     logging.info("Chromeドライバーを設定しました。ヘッドレスモード: 有効")
@@ -280,62 +292,80 @@ def extract_caption(driver):
         logging.error(f"キャプションの抽出中にエラーが発生しました: {e}")
         return None
 
-def extract_reply_count(driver, max_scroll_attempts=5, scroll_pause_time=2):
-    try:
-        reply_count = 0
-        scroll_attempts = 0
-        last_height = driver.execute_script("return document.body.scrollHeight")
-        
-        while scroll_attempts < max_scroll_attempts:
-            try:
-                # x78zum5 xdt5ytf クラスを持つdiv要素を探す
-                outer_elements = WebDriverWait(driver, 10).until(
-                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div[class='x78zum5 xdt5ytf']"))
-                )
-                
-                for outer_element in outer_elements:
-                    # 各外部要素内で最初の x1a2a7pz x1n2onr6 クラスを持つdiv要素を探す
-                    inner_element = outer_element.find_element(By.CSS_SELECTOR, "div[class='x1a2a7pz x1n2onr6']")
-                    
-                    # 内部要素内で特定のspan要素を探す
-                    try:
-                        span_element = inner_element.find_element(By.CSS_SELECTOR, "span[class='x17qophe x10l6tqk x13vifvy']")
-                        if span_element.text == "1":
-                            reply_count += 1
-                    except NoSuchElementException:
-                        # span要素が見つからない場合は何もしない
-                        pass
-                
-                # ページ全体をスクロール
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                
-                # 新しいコンテンツがロードされるのを待つ
-                time.sleep(scroll_pause_time)
-                
-                # 新しい高さを取得
-                new_height = driver.execute_script("return document.body.scrollHeight")
-                
-                # スクロールしても高さが変わらなければループを抜ける
-                if new_height == last_height:
-                    break
-                
-                last_height = new_height
-                scroll_attempts += 1
+def extract_reply_count(driver, username, max_scroll_attempts=5, scroll_pause_time=2):
+    """
+    指定されたユーザーの投稿に対するコメントの返信数を抽出する関数。
+    重複するコメントを排除します。
+    
+    :param driver: Seleniumのウェブドライバーインスタンス
+    :param username: 対象ユーザーのユーザーネーム
+    :param max_scroll_attempts: 最大スクロール試行回数（デフォルト: 5）
+    :param scroll_pause_time: スクロール後の待機時間（秒）（デフォルト: 2）
+    :return: 抽出されたコメントの返信数の合計
+    """
+    logging.info(f"{username}のコメント返信数の抽出を開始します。")
+
+    def get_comment_count(outer_element):
+        """個々のコメント要素から返信数を抽出し、キャプションテキストを返す関数。"""
+        try:
+            caption_element = outer_element.find_element(By.CSS_SELECTOR, "span.x1lliihq.x1plvlek.xryxfnj.x1n2onr6.x193iq5w.xeuugli.x1fj9vlw.x13faqbe.x1vvkbs.x1s928wv.xhkezso.x1gmr53x.x1cpjm7i.x1fgarty.x1943h6x.x1i0vuye.xjohtrz.xo1l8bm.xp07o12.x1yc453h.xat24cr.xdj266r")
+            caption_text = caption_element.text
+
+            reply_spans = outer_element.find_elements(By.CSS_SELECTOR, "span.x1lliihq.x1plvlek.xryxfnj.x1n2onr6.x193iq5w.xeuugli.x1fj9vlw.x13faqbe.x1vvkbs.x1s928wv.xhkezso.x1gmr53x.x1cpjm7i.x1fgarty.x1943h6x.x1i0vuye.xmd891q.xo1l8bm.xc82ewx.x1yc453h")
             
-            except (StaleElementReferenceException, NoSuchElementException):
-                # 要素が見つからない場合は少し待ってリトライ
-                time.sleep(1)
-                continue
-        
-        return reply_count
+            if len(reply_spans) >= 2:
+                reply_count = reply_spans[1].find_element(By.CSS_SELECTOR, "span.x17qophe.x10l6tqk.x13vifvy").text
+                return int(reply_count == "1"), caption_text
+            return 0, caption_text
+        except NoSuchElementException:
+            logging.debug("キャプションまたは返信数の要素が見つかりませんでした。")
+            return 0, ""
+        except Exception as e:
+            logging.error(f"コメント情報の取得中に予期せぬエラーが発生しました: {str(e)}")
+            return 0, ""
+
+    try:
+        comment_count = 0
+        processed_comments = set()  # 処理済みコメントを追跡するためのセット
+
+        for scroll_attempt in range(max_scroll_attempts):
+            logging.info(f"スクロール試行 {scroll_attempt + 1}/{max_scroll_attempts}")
+            
+            outer_elements = WebDriverWait(driver, 10).until(
+                EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.x78zum5.xdt5ytf"))
+            )
+
+            for outer_element in outer_elements[1:]:  # 最初の要素（投稿自体）をスキップ
+                count, caption = get_comment_count(outer_element)
+                
+                if caption not in processed_comments:
+                    processed_comments.add(caption)
+                    comment_count += count
+                    logging.info(f"新しいコメント処理: {caption[:30]}... 返信数: {count}")
+                else:
+                    logging.debug(f"重複コメントをスキップ: {caption[:30]}...")
+
+            # ページをスクロール
+            last_height = driver.execute_script("return document.body.scrollHeight")
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(scroll_pause_time)
+
+            new_height = driver.execute_script("return document.body.scrollHeight")
+            if new_height == last_height:
+                logging.info("これ以上スクロールできません。処理を終了します。")
+                break
+
+        logging.info(f"合計 {comment_count} 件の返信数1のコメントを検出しました。")
+        return comment_count
+
     except TimeoutException:
-        logging.warning("要素の読み込みがタイムアウトしました。返信数は0として扱います。")
+        logging.warning("ページの読み込みがタイムアウトしました。コメント数は0として扱います。")
         return 0
     except Exception as e:
-        logging.error(f"コメント返信数の抽出中に予期せぬエラーが発生しました: {e}")
+        logging.error(f"予期せぬエラーが発生しました: {str(e)}")
         return 0
 
-def process_posts(driver, post_hrefs):
+def process_posts(driver, post_hrefs, target_username):
     processed_posts = []
     previous_post = None
     
@@ -350,23 +380,32 @@ def process_posts(driver, post_hrefs):
                 EC.presence_of_element_located((By.TAG_NAME, "body"))
             )
 
+
+
             # 投稿日時を抽出
             post_datetime = extract_post_datetime(driver)
+            logging.info(f"投稿日時処理完了")
 
             # いいね数を抽出
             like_count = extract_like_count(driver)
-
-            # コメント数を抽出
-            comment_count = extract_comment_count(driver)
-
-            # コメント返信数を抽出
-            reply_count = extract_reply_count(driver)
+            logging.info(f"いいね処理完了")
 
             # 画像URLを抽出
             image_urls = extract_image_urls(driver)
+            logging.info(f"画像URL処理完了")
 
             # キャプションを抽出
             caption = extract_caption(driver)
+            logging.info(f"キャプション処理完了")
+
+            # コメント数を抽出
+            comment_count = extract_comment_count(driver)
+            logging.info(f"コメント数処理完了")
+
+            if comment_count > 0:
+                # コメント返信数を抽出
+                reply_count = extract_reply_count(driver, target_username)
+                logging.info(f"コメント返信数処理完了")
             
             current_post = {
                 'url': full_url,
@@ -411,12 +450,80 @@ def is_duplicate_post(previous_post, current_post):
         previous_post['caption'] == current_post['caption']
     )
 
-
-
 def validate_input(input_string, input_type):
     if not input_string:
         raise ValueError(f"{input_type}が空です。有効な値を入力してください。")
     return input_string
+
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.utils import get_column_letter
+from datetime import datetime
+
+def save_to_excel(processed_posts, target_username):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"{target_username}の投稿データ"
+
+    # ヘッダーの設定
+    headers = ['投稿日時', 'キャプション', '画像', 'いいね数', 'コメント数', 'コメント返信数', '投稿URL']
+    orange_fill = PatternFill(start_color='FFA500', end_color='FFA500', fill_type='solid')
+    
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.fill = orange_fill
+
+    # データの書き込み
+    row = 2
+    for post in processed_posts:
+        start_row = row
+        ws.cell(row=row, column=1, value=post['datetime'])
+        ws.cell(row=row, column=2, value=post['caption'])
+        
+        # 画像URLを縦に並べてハイパーリンクとして追加
+        image_urls = post['image_urls']
+        if image_urls != ['なし']:
+            for i, url in enumerate(image_urls, start=1):
+                cell = ws.cell(row=row+i-1, column=3, value=f'画像{i}')
+                cell.hyperlink = url
+                cell.font = Font(color="0563C1", underline="single")  # Hyperlink style
+            row += len(image_urls) - 1  # 画像の数だけ行を増やす
+        else:
+            ws.cell(row=row, column=3, value='なし')
+        
+        ws.cell(row=start_row, column=4, value=post['like_count'])
+        ws.cell(row=start_row, column=5, value=post['comment_count'])
+        ws.cell(row=start_row, column=6, value=post['reply_count'])
+        
+        # 投稿URLをハイパーリンクとして追加
+        cell = ws.cell(row=start_row, column=7, value='投稿リンク')
+        cell.hyperlink = post['url']
+        cell.font = Font(color="0563C1", underline="single")  # Hyperlink style
+
+        # セルの結合
+        for col in [1, 2, 4, 5, 6, 7]:
+            if row > start_row:
+                ws.merge_cells(start_row=start_row, start_column=col, end_row=row, end_column=col)
+                ws.cell(row=start_row, column=col).alignment = Alignment(vertical='center')
+
+        row += 1  # 次の投稿のために行を進める
+
+    # 列幅の自動調整
+    for column_cells in ws.columns:
+        length = max(len(str(cell.value)) for cell in column_cells)
+        ws.column_dimensions[get_column_letter(column_cells[0].column)].width = length + 2
+
+    # ファイル名の設定（現在の日時を含む）
+    current_time = datetime.now().strftime("%Y年%m月%d日_%H時%M分%S秒")
+    file_name = f"{target_username}_投稿データ_{current_time}.xlsx"
+    
+    # ファイルの保存
+    wb.save(file_name)
+    logging.info(f"データをExcelファイルに保存しました: {file_name}")
+
+    return file_name
 
 if __name__ == "__main__":
     try:
@@ -435,12 +542,13 @@ if __name__ == "__main__":
                 print(href)
 
              # 投稿の処理
-            processed_posts = process_posts(driver, post_hrefs)
+            processed_posts = process_posts(driver, post_hrefs, target_username)
             
             logging.info(f"処理された投稿の総数: {len(processed_posts)} 件")
             
-            # ここに処理済みの投稿データを使用するコードを追加します
-            # 例: save_to_excel(processed_posts)
+            # Excelファイルに保存
+            excel_file = save_to_excel(processed_posts, target_username)
+            print(f"データが {excel_file} に保存されました。")
         else:
             logging.error("ログインに失敗したため、スクレイピングを実行できません。")
 
