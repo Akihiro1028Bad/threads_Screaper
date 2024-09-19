@@ -292,6 +292,23 @@ def extract_caption(driver):
         logging.error(f"キャプションの抽出中にエラーが発生しました: {e}")
         return None
 
+def extract_impression_count(driver):
+    try:
+        # ビュー数を含む要素を待機して取得
+        view_element = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, 
+                "//div[contains(@class, 'x1b12d3d') and contains(@class, 'x6ikm8r')]//span[contains(@class, 'x1lliihq') and contains(@class, 'x1plvlek')]//span[contains(@class, 'x1lliihq') and contains(@class, 'x193iq5w')]"))
+        )
+        
+        # テキストを取得し、数字部分のみを抽出
+        view_text = view_element.text
+        impression_count = int(''.join(filter(str.isdigit, view_text)))
+        
+        return impression_count
+    except Exception as e:
+        logging.error(f"ビュー数の抽出中にエラーが発生しました: {e}")
+        return 0
+
 def extract_reply_count(driver, username, max_scroll_attempts=5, scroll_pause_time=2):
     """
     指定されたユーザーの投稿に対するコメントの返信数を抽出する関数。
@@ -380,7 +397,9 @@ def process_posts(driver, post_hrefs, target_username):
                 EC.presence_of_element_located((By.TAG_NAME, "body"))
             )
 
-
+            # インプレッション数を抽出
+            impression_count = extract_impression_count(driver)
+            logging.info(f"インプレッション数処理完了")
 
             # 投稿日時を抽出
             post_datetime = extract_post_datetime(driver)
@@ -413,6 +432,7 @@ def process_posts(driver, post_hrefs, target_username):
                 'like_count': like_count,
                 'comment_count': comment_count,
                 'reply_count': reply_count,
+                'impression_count': impression_count, 
                 'caption': caption,
                 'image_urls': image_urls,
             }
@@ -427,6 +447,7 @@ def process_posts(driver, post_hrefs, target_username):
             
             logging.info(f"処理完了: {full_url}")
             logging.info(f"  - 日時: {post_datetime}")
+            logging.info(f"  - インプレッション数: {impression_count}")
             logging.info(f"  - いいね数: {like_count}")
             logging.info(f"  - コメント数: {comment_count}")
             logging.info(f"  - コメント返信数: {reply_count}") 
@@ -455,18 +476,13 @@ def validate_input(input_string, input_type):
         raise ValueError(f"{input_type}が空です。有効な値を入力してください。")
     return input_string
 
-from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, PatternFill
-from openpyxl.utils import get_column_letter
-from datetime import datetime
-
 def save_to_excel(processed_posts, target_username):
     wb = Workbook()
     ws = wb.active
     ws.title = f"{target_username}の投稿データ"
 
     # ヘッダーの設定
-    headers = ['投稿日時', 'キャプション', '画像', 'いいね数', 'コメント数', 'コメント返信数', '投稿URL']
+    headers = ['投稿日時', 'キャプション', '画像', 'いいね数', 'コメント数', 'コメント返信数', 'インプレッション数', '投稿URL']
     orange_fill = PatternFill(start_color='FFA500', end_color='FFA500', fill_type='solid')
     
     for col, header in enumerate(headers, start=1):
@@ -496,14 +512,15 @@ def save_to_excel(processed_posts, target_username):
         ws.cell(row=start_row, column=4, value=post['like_count'])
         ws.cell(row=start_row, column=5, value=post['comment_count'])
         ws.cell(row=start_row, column=6, value=post['reply_count'])
+        ws.cell(row=start_row, column=7, value=post['impression_count']) 
         
         # 投稿URLをハイパーリンクとして追加
-        cell = ws.cell(row=start_row, column=7, value='投稿リンク')
+        cell = ws.cell(row=start_row, column=8, value='投稿リンク')
         cell.hyperlink = post['url']
         cell.font = Font(color="0563C1", underline="single")  # Hyperlink style
 
         # セルの結合
-        for col in [1, 2, 4, 5, 6, 7]:
+        for col in [1, 2, 4, 5, 6, 7, 8]:
             if row > start_row:
                 ws.merge_cells(start_row=start_row, start_column=col, end_row=row, end_column=col)
                 ws.cell(row=start_row, column=col).alignment = Alignment(vertical='center')
