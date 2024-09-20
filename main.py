@@ -18,8 +18,39 @@ from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils import get_column_letter
 from datetime import datetime
 import random
+import msvcrt  # Windowsの場合
+import threading
+from colorama import init, Fore, Back, Style
+from pyfiglet import Figlet
+import time
+import sys
+
+init(autoreset=True)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def print_progress(current, total):
+    fig = Figlet(font='big')
+    progress_text = f"{current}/{total}"
+    ascii_art = fig.renderText(progress_text)
+    
+    sys.stdout.write('\033[H')   # Move cursor to home position
+    print('\n' * 10)  # 10行の改行を挿入
+    
+    print(f"{Fore.YELLOW}{Style.BRIGHT}取得済みポスト数:")
+    print(f"{Fore.CYAN}{ascii_art}")
+    
+    for _ in range(5):  # Blink effect
+        sys.stdout.write('\033[?25l')  # Hide cursor
+        sys.stdout.write(f"\r{Fore.RED}{Back.WHITE}{Style.BRIGHT}進捗状況: {progress_text}{Style.RESET_ALL}")
+        sys.stdout.flush()
+        time.sleep(0.3)
+        sys.stdout.write(f"\r{' ' * (30 + len(progress_text))}")
+        sys.stdout.flush()
+        time.sleep(0.3)
+    
+    sys.stdout.write('\033[?25h')  # Show cursor
+    print("\n" + "=" * 50)
 
 def setup_driver():
     chrome_options = Options()
@@ -40,6 +71,15 @@ def setup_driver():
 def wait_and_log(seconds, message):
     logging.info(f"{message}、{seconds}秒間待機します...")
     time.sleep(seconds)
+
+def key_listener(shared_data):
+    while not shared_data['stop']:
+        if msvcrt.kbhit():  # Windowsの場合
+        # if select.select([sys.stdin], [], [], 0.1)[0]:  # Unixの場合
+            key = msvcrt.getch().decode('utf-8').lower()
+            if key == 'q':
+                shared_data['terminate'] = True
+                break
 
 def save_cookies(driver, filename='cookies.json'):
     """ドライバーのクッキーを保存する"""
@@ -385,17 +425,44 @@ def extract_reply_count(driver, username, max_scroll_attempts=5, scroll_pause_ti
 def process_posts(driver, post_hrefs, target_username):
     processed_posts = []
     previous_post = None
-    
+
+    index = 1
+    total_posts = len(post_hrefs)
+
     for href in post_hrefs:
+        if shared_data['terminate']:
+            logging.info("ユーザーによる中断を検出しました。処理を終了します。")
+            break
+
         try:
             full_url = f"https://www.threads.net{href}"
             driver.get(full_url)
             logging.info(f"アクセス中: {full_url}")
             
-            # ページの読み込みを待機
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.TAG_NAME, "body"))
+                    )
+                    break  # 成功したらループを抜ける
+                except TimeoutException:
+                    if attempt < max_retries - 1:  # 最後の試行でなければ
+                        logging.warning(f"ページ読み込みに失敗しました。再試行します。(試行回数: {attempt + 1})")
+                        time.sleep(2)  # 短い待機時間を設ける
+                    else:
+                        logging.info("ページの読み込みが繰り返し失敗しました。")
+                        logging.info("ページが読み込まれなかったのでこのページの処理をスキップします。")
+                        continue
+
+            logging.info(f"ページが正常に読み込まれました。")
+
+            time.sleep(2)  # 短い待機時間を設ける
+
+            # 429エラーの検出
+            if is_rate_limited(driver):
+                logging.error("429エラー（Too Many Requests）が検出されました。処理を中断します。")
+                break  # ループを抜ける
 
             # インプレッション数を抽出
             impression_count = extract_impression_count(driver)
@@ -453,6 +520,12 @@ def process_posts(driver, post_hrefs, target_username):
             logging.info(f"  - コメント返信数: {reply_count}") 
             logging.info(f"  - キャプション: {caption}")
             logging.info(f"  - 画像URL: {', '.join(image_urls)}")
+
+            logging.info(f"--------------------")
+            logging.info(f"★★現在取得投稿数：{index}★★")
+            logging.info(f"--------------------")
+            
+            index = index + 1
             
             # レート制限を回避するための待機
             time.sleep(2)
@@ -461,6 +534,30 @@ def process_posts(driver, post_hrefs, target_username):
             logging.error(f"投稿の処理中にエラーが発生しました: {full_url}, エラー: {e}")
 
     return processed_posts
+
+def is_rate_limited(driver):
+    try:
+        # ステータスコードを取得
+        status_code = driver.execute_script("return window.performance.timing.responseStart > 0 ? window.performance.getEntries()[0].responseStatus : null;")
+        
+        if status_code == 429:
+            return True
+
+        # エラーメッセージを確認
+        error_messages = [
+            "Too Many Requests",
+            "レート制限を超えました",
+            "Rate limit exceeded"
+        ]
+        
+        for message in error_messages:
+            if message in driver.page_source:
+                return True
+
+        return False
+    except WebDriverException:
+        # エラーが発生した場合、安全のためにTrueを返す
+        return True
 
 def is_duplicate_post(previous_post, current_post):
     """
@@ -549,6 +646,12 @@ if __name__ == "__main__":
         target_username = validate_input(input("スクレイピングしたいユーザー名を入力してください: ").strip(), "ターゲットユーザー名")
 
         driver = setup_driver()
+
+        shared_data = {'stop': False, 'terminate': False}
+        
+        # キー入力リスナーをバックグラウンドで開始
+        listener_thread = threading.Thread(target=key_listener, args=(shared_data,))
+        listener_thread.start()
         
         if login_to_threads(driver, login_username, login_password):
             post_hrefs = access_threads_profile(driver, target_username, login_username, login_password)
@@ -561,11 +664,16 @@ if __name__ == "__main__":
              # 投稿の処理
             processed_posts = process_posts(driver, post_hrefs, target_username)
             
-            logging.info(f"処理された投稿の総数: {len(processed_posts)} 件")
+            # キー入力リスナーを停止
+            shared_data['stop'] = True
+            listener_thread.join()
             
+            logging.info(f"処理された投稿の総数: {len(processed_posts)} 件")
+
             # Excelファイルに保存
             excel_file = save_to_excel(processed_posts, target_username)
             print(f"データが {excel_file} に保存されました。")
+            
         else:
             logging.error("ログインに失敗したため、スクレイピングを実行できません。")
 
