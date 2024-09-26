@@ -255,8 +255,8 @@ def extract_like_count(driver):
     try:
         # 親要素を特定
         parent_element = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div.x6s0dn4.xfkn95n.xly138o.xchwasx.xfxlei4.x17zd0t2.x78zum5.xl56j7k.x1n2onr6.x3oybdh.x12w9bfk.xx6bhzk.x11xpdln.xc9qbxq.x1ye3gou.xn6708d.x14atkfc"))
-        )
+            EC.presence_of_element_located((By.CSS_SELECTOR, "div:has(svg[aria-label='「いいね！」'])")
+        ))
         
         # 子要素（いいね数を含む要素）を特定
         like_element = parent_element.find_element(By.CSS_SELECTOR, "span.x1lliihq.x1plvlek.xryxfnj.x1n2onr6.x193iq5w.xeuugli.x1fj9vlw.x13faqbe.x1vvkbs.x1s928wv.xhkezso.x1gmr53x.x1cpjm7i.x1fgarty.x1943h6x.x1i0vuye.xmd891q.xo1l8bm.xc82ewx.x1yc453h div.xu9jpxn.x1n2onr6.xqcsobp.x12w9bfk.x1wsgiic.xuxw1ft.x17fnjtu span.x17qophe.x10l6tqk.x13vifvy")
@@ -271,29 +271,39 @@ def extract_like_count(driver):
 
 def extract_comment_count(driver):
     try:
-        # 親要素を特定
-        parent_elements = WebDriverWait(driver, 10).until(
-            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.x6s0dn4.xfkn95n.xly138o.xchwasx.xfxlei4.x17zd0t2.x78zum5.xl56j7k.x1n2onr6.x3oybdh.x12w9bfk.xx6bhzk.x11xpdln.xc9qbxq.x1ye3gou.xn6708d.x14atkfc"))
+        # コメントアイコンと数字を含む要素を複数取得
+        comment_elements = WebDriverWait(driver, 10).until(
+            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.x6s0dn4.x17zd0t2.x78zum5.xl56j7k"))
         )
-        
-        if len(parent_elements) < 2:
-            logging.warning("コメント数の要素が見つかりません。0を返します。")
-            return 0
-        
-        # 2番目の親要素を選択
-        second_parent = parent_elements[1]
-        
-        # 子要素（コメント数を含む要素）を特定
-        comment_element = second_parent.find_element(By.CSS_SELECTOR, "span.x1lliihq.x1plvlek.xryxfnj.x1n2onr6.x193iq5w.xeuugli.x1fj9vlw.x13faqbe.x1vvkbs.x1s928wv.xhkezso.x1gmr53x.x1cpjm7i.x1fgarty.x1943h6x.x1i0vuye.xmd891q.xo1l8bm.xc82ewx.x1yc453h div.xu9jpxn.x1n2onr6.xqcsobp.x12w9bfk.x1wsgiic.xuxw1ft.x17fnjtu span.x17qophe.x10l6tqk.x13vifvy")
-        
+
+        # 2番目の要素（インデックス1）を親要素として選択
+        if len(comment_elements) >= 2:
+            parent_element = comment_elements[1]
+        else:
+            logging.warning("2番目の要素が見つかりません。最初の要素を使用します。")
+            parent_element = comment_elements[0]
+
         # コメント数を取得
-        comment_count = comment_element.text
+        count_element = parent_element.find_element(By.CSS_SELECTOR, "span.x17qophe.x10l6tqk.x13vifvy")
+        comment_count = count_element.text.strip()
+        
+        logging.info(f"抽出されたコメント数: {comment_count}")
         
         return int(comment_count) if comment_count.isdigit() else 0
-    except Exception as e:
-        logging.error(f"コメント数の抽出中にエラーが発生しました: {e}")
-        return 0
 
+    except TimeoutException:
+        logging.error("コメント要素を見つけるのにタイムアウトしました")
+        return 0
+    except NoSuchElementException:
+        logging.error("コメント要素が見つかりませんでした")
+        return 0
+    except IndexError:
+        logging.error("必要な数の要素が見つかりませんでした")
+        return 0
+    except Exception as e:
+        logging.error(f"コメント数の抽出中に予期せぬエラーが発生しました: {e}")
+        return 0
+        
 def extract_image_urls(driver):
     try:
         # 画像を含む親要素を待機して取得
@@ -487,6 +497,8 @@ def process_posts(driver, post_hrefs, target_username):
             # コメント数を抽出
             comment_count = extract_comment_count(driver)
             logging.info(f"コメント数処理完了")
+
+            reply_count = 0
 
             if comment_count > 0:
                 # コメント返信数を抽出
