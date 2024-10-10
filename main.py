@@ -12,7 +12,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.keys import Keys
 from datetime import datetime, timedelta
-from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException
+from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException, WebDriverException
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils import get_column_letter
@@ -24,6 +24,7 @@ from colorama import init, Fore, Back, Style
 from pyfiglet import Figlet
 import time
 import sys
+import re
 
 init(autoreset=True)
 
@@ -252,22 +253,31 @@ def extract_post_datetime(driver):
 
 
 def extract_like_count(driver):
-    try:
-        # 親要素を特定
-        parent_element = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div:has(svg[aria-label='「いいね！」'])")
-        ))
-        
-        # 子要素（いいね数を含む要素）を特定
-        like_element = parent_element.find_element(By.CSS_SELECTOR, "span.x1lliihq.x1plvlek.xryxfnj.x1n2onr6.x193iq5w.xeuugli.x1fj9vlw.x13faqbe.x1vvkbs.x1s928wv.xhkezso.x1gmr53x.x1cpjm7i.x1fgarty.x1943h6x.x1i0vuye.xmd891q.xo1l8bm.xc82ewx.x1yc453h div.xu9jpxn.x1n2onr6.xqcsobp.x12w9bfk.x1wsgiic.xuxw1ft.x17fnjtu span.x17qophe.x10l6tqk.x13vifvy")
-        
-        # いいね数を取得
-        like_count = like_element.text
-        
-        return int(like_count) if like_count.isdigit() else 0
-    except Exception as e:
-        logging.error(f"いいね数の抽出中にエラーが発生しました: {e}")
-        return 0
+    """いいね数を取得する"""
+    selectors = [
+        "div.x6s0dn4.x17zd0t2.x78zum5.xl56j7k span.x17qophe.x10l6tqk.x13vifvy",
+        "span.x1lliihq.x1plvlek.xryxfnj.x1n2onr6.x1ji0vk5.x18bv5gf.x193iq5w.xeuugli.x1fj9vlw.x13faqbe.x1vvkbs.x1s928wv.xhkezso.x1gmr53x.x1cpjm7i.x1fgarty.x1943h6x.x1i0vuye.xmd891q.xo1l8bm.xc82ewx.x1yc453h span.x17qophe.x10l6tqk.x13vifvy",
+        "div.xu9jpxn.x1n2onr6.xqcsobp.x12w9bfk.x1wsgiic.xuxw1ft.x1bl4301 span.x17qophe.x10l6tqk.x13vifvy"
+    ]
+    
+    for selector in selectors:
+        try:
+            element = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+            )
+            like_count = element.text.strip()
+            
+            like_count_int = int(like_count) if like_count.isdigit() else 0
+            
+            logging.info(f"いいね数を取得しました: {like_count_int}")
+            return like_count_int
+        except TimeoutException:
+            continue
+        except NoSuchElementException:
+            continue
+        except Exception as e:
+            logging.error(f"セレクター {selector} での処理中にエラーが発生しました: {e}")
+            continue
 
 def extract_comment_count(driver):
     try:
@@ -343,6 +353,12 @@ def extract_caption(driver):
         return None
 
 def extract_impression_count(driver):
+    """
+    表示数を取得し、多様な形式（通常の数字、'k'、'M'表記、カンマ区切り、日本語の万単位）に対応する
+    
+    :param driver: Selenium WebDriverインスタンス
+    :return: int 表示数（整数値）
+    """
     try:
         # ビュー数を含む要素を待機して取得
         view_element = WebDriverWait(driver, 10).until(
@@ -350,14 +366,37 @@ def extract_impression_count(driver):
                 "//div[contains(@class, 'x1b12d3d') and contains(@class, 'x6ikm8r')]//span[contains(@class, 'x1lliihq') and contains(@class, 'x1plvlek')]//span[contains(@class, 'x1lliihq') and contains(@class, 'x193iq5w')]"))
         )
         
-        # テキストを取得し、数字部分のみを抽出
-        view_text = view_element.text
-        impression_count = int(''.join(filter(str.isdigit, view_text)))
+        # テキストを取得
+        view_text = view_element.text.strip()
         
-        return impression_count
+        # 数字部分のみを抽出するための正規表現
+        number_pattern = r'([\d,\.]+)\s*(k|m|万)?'
+        match = re.search(number_pattern, view_text, re.IGNORECASE)
+        
+        if match:
+            number, unit = match.groups()
+            # カンマを除去し、浮動小数点数に変換
+            number = float(number.replace(',', ''))
+            
+            if unit:
+                unit = unit.lower()
+                if unit == 'k':
+                    number *= 1000
+                elif unit == 'm':
+                    number *= 1000000
+                elif unit == '万':
+                    number *= 10000
+            
+            impression_count = int(number)
+            
+            logging.info(f"表示数を取得しました: {impression_count} (元の表記: {view_text})")
+            return impression_count
+        else:
+            logging.warning(f"表示数の形式が認識できません: {view_text}")
+            return 0
     except Exception as e:
-        logging.error(f"ビュー数の抽出中にエラーが発生しました: {e}")
-        return 0
+        logging.error(f"表示数の抽出中にエラーが発生しました: {e}")
+        raise
 
 def extract_reply_count(driver, username, max_scroll_attempts=5, scroll_pause_time=2):
     """
